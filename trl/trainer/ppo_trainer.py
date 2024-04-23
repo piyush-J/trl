@@ -640,11 +640,17 @@ class PPOTrainer(BaseTrainer):
         """
         bs = self.config.batch_size
 
+        # score can either be a list of size bs with 0-dim tensors or a list of size bs with tensor of size response_length
         queries, responses, scores, response_masks = self._step_safety_checker(
             bs, queries, responses, scores, response_masks
         )
-        scores = torch.tensor(scores, device=self.current_device)
-        if self.config.use_score_scaling:
+
+        if scores[0].dim() == 0: # if scores are scalars
+            scores = torch.tensor(scores, device=self.current_device)
+        else:
+            scores = [torch.tensor(score, device=self.current_device) for score in scores]
+
+        if scores[0].dim() == 0 and self.config.use_score_scaling: #TODO: for scores[0].dim() > 0
             # Score scaling
             scores_mean, scores_std = self.running.update(scores)
             tensor_to_kwargs = dict(dtype=scores.dtype, device=scores.device)
@@ -654,7 +660,7 @@ class PPOTrainer(BaseTrainer):
             else:
                 scores /= score_scaling_factor
 
-        if self.config.score_clip is not None:
+        if scores[0].dim() == 0 and self.config.score_clip is not None: #TODO: for scores[0].dim() > 0
             # Score clipping
             scores_dtype = scores.dtype
             scores = torch.clip(scores.float(), -self.config.score_clip, self.config.score_clip).to(dtype=scores_dtype)
@@ -1087,7 +1093,7 @@ class PPOTrainer(BaseTrainer):
 
         Args:
             scores (`torch.FloatTensor`):
-                Scores from the reward model, shape (`batch_size`)
+                Scores from the reward model, shape (`batch_size`) or (`batch_size`, `response_length`)
             logprobs (`torch.FloatTensor`):
                 Log probabilities of the model, shape (`batch_size`, `response_length`)
             ref_logprobs (`torch.FloatTensor`):
@@ -1106,10 +1112,14 @@ class PPOTrainer(BaseTrainer):
             non_score_reward = -self.kl_ctl.value * kl
             non_score_rewards.append(non_score_reward)
             reward = non_score_reward.clone()
+            first_non_masked_index = mask.nonzero()[0]
             last_non_masked_index = mask.nonzero()[-1]
 
             # reward is preference model score + KL penalty
-            reward[last_non_masked_index] += score
+            if score.dim() == 0:
+                reward[last_non_masked_index] += score
+            else:
+                reward[first_non_masked_index:last_non_masked_index+1] += score
             rewards.append(reward)
         return torch.stack(rewards), torch.stack(non_score_rewards), torch.stack(kls)
 
@@ -1271,8 +1281,13 @@ class PPOTrainer(BaseTrainer):
         mean_non_score_reward = masked_mean(
             data["non_score_reward"], mask
         )  # non_score_reward is size `batch_size`, `response_length`
-        mean_scores = data["scores"].mean()  # scores is size `batch_size`
-        std_scores = data["scores"].std()
+
+        if data["scores"][0].dim() == 0: # scores is size `batch_size`
+            mean_scores = data["scores"].mean()  
+            std_scores = data["scores"].std()
+        else: # size `batch_size`, `response_length`
+            mean_scores = torch.stack(data["scores"]).mean()
+            std_scores = torch.stack(data["scores"]).std()
 
         if mean_kl.item() < -1.0:
             # warn users
