@@ -1286,8 +1286,8 @@ class PPOTrainer(BaseTrainer):
             mean_scores = data["scores"].mean()  
             std_scores = data["scores"].std()
         else: # size `batch_size`, `response_length`
-            mean_scores = torch.stack(data["scores"]).mean()
-            std_scores = torch.stack(data["scores"]).std()
+            mean_scores = torch.cat(data["scores"]).mean()
+            std_scores = torch.cat(data["scores"]).std()
 
         if mean_kl.item() < -1.0:
             # warn users
